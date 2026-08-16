@@ -1,3 +1,6 @@
+import json
+import os
+
 import requests
 
 from google.auth.transport.requests import Request
@@ -16,16 +19,38 @@ PROJECT_ID = "gen-lang-client-0229154451"
 
 
 def get_credentials():
-    creds = Credentials.from_authorized_user_file(
-        "token.json",
-        SCOPES,
-    )
+    """
+    Локально использует token.json.
+    В Streamlit Cloud использует GOOGLE_OAUTH_TOKEN_JSON
+    из Secrets / environment variables.
+    """
+
+    token_from_cloud = os.getenv("GOOGLE_OAUTH_TOKEN_JSON")
+
+    if token_from_cloud:
+        creds = Credentials.from_authorized_user_info(
+            json.loads(token_from_cloud),
+            SCOPES,
+        )
+    else:
+        creds = Credentials.from_authorized_user_file(
+            "token.json",
+            SCOPES,
+        )
 
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
 
-        with open("token.json", "w") as token_file:
-            token_file.write(creds.to_json())
+        # Локально сохраняем обновлённый access token.
+        # Streamlit Secret менять автоматически нельзя.
+        if not token_from_cloud:
+            with open("token.json", "w") as token_file:
+                token_file.write(creds.to_json())
+
+    if not creds.valid:
+        raise RuntimeError(
+            "OAuth credentials Gemini недействительны"
+        )
 
     return creds
 
@@ -45,7 +70,7 @@ def analyze_text(user_text: str) -> GuardAnalysis:
     creds = get_credentials()
 
     url = (
-        f"https://generativelanguage.googleapis.com/v1beta/"
+        "https://generativelanguage.googleapis.com/v1beta/"
         f"models/{TEXT_MODEL}:generateContent"
     )
 
@@ -53,9 +78,15 @@ def analyze_text(user_text: str) -> GuardAnalysis:
         "contents": [
             {
                 "parts": [
-                    {"text": GUARD_PROMPT},
-                    {"text": "СИТУАЦИЯ ПОЛЬЗОВАТЕЛЯ:"},
-                    {"text": user_text.strip()},
+                    {
+                        "text": GUARD_PROMPT
+                    },
+                    {
+                        "text": "СИТУАЦИЯ ПОЛЬЗОВАТЕЛЯ:"
+                    },
+                    {
+                        "text": user_text.strip()
+                    },
                 ]
             }
         ],
@@ -78,14 +109,22 @@ def analyze_text(user_text: str) -> GuardAnalysis:
 
     if not response.ok:
         raise RuntimeError(
-            f"Gemini OAuth error {response.status_code}: {response.text}"
+            f"Gemini OAuth error "
+            f"{response.status_code}: {response.text}"
         )
 
     data = response.json()
 
     try:
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        text = (
+            data["candidates"][0]
+            ["content"]
+            ["parts"][0]
+            ["text"]
+        )
+
         return GuardAnalysis.model_validate_json(text)
+
     except Exception as exc:
         raise RuntimeError(
             "Gemini вернул некорректный структурированный ответ"
