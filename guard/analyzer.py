@@ -1,23 +1,39 @@
-from google import genai
+import requests
 
-from config import GEMINI_API_KEY, TEXT_MODEL
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+
+from config import TEXT_MODEL
 from guard.models import GuardAnalysis
 from guard.prompts import GUARD_PROMPT
 
 
-if not GEMINI_API_KEY:
-    raise RuntimeError("GEMINI_API_KEY не найден")
+SCOPES = [
+    "https://www.googleapis.com/auth/generative-language.retriever"
+]
+
+PROJECT_ID = "gen-lang-client-0229154451"
 
 
-client = genai.Client(
-    api_key=GEMINI_API_KEY
-)
+def get_credentials():
+    creds = Credentials.from_authorized_user_file(
+        "token.json",
+        SCOPES,
+    )
+
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+
+        with open("token.json", "w") as token_file:
+            token_file.write(creds.to_json())
+
+    return creds
 
 
 def analyze_text(user_text: str) -> GuardAnalysis:
     """
-    Отправляет текст в Gemini и возвращает
-    структурированный GuardAnalysis.
+    Отправляет текст в Gemini через OAuth
+    и возвращает структурированный GuardAnalysis.
 
     Risk score здесь НЕ рассчитывается.
     Его считает risk_engine.py.
@@ -26,23 +42,50 @@ def analyze_text(user_text: str) -> GuardAnalysis:
     if not user_text or not user_text.strip():
         raise ValueError("Пустой текст для анализа")
 
-    response = client.models.generate_content(
-        model=TEXT_MODEL,
-        contents=[
-            GUARD_PROMPT,
-            "СИТУАЦИЯ ПОЛЬЗОВАТЕЛЯ:",
-            user_text.strip(),
-        ],
-        config={
-            "response_mime_type": "application/json",
-            "response_json_schema": GuardAnalysis.model_json_schema(),
-        },
+    creds = get_credentials()
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/"
+        f"models/{TEXT_MODEL}:generateContent"
     )
 
-    try:
-        return GuardAnalysis.model_validate_json(
-            response.text
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": GUARD_PROMPT},
+                    {"text": "СИТУАЦИЯ ПОЛЬЗОВАТЕЛЯ:"},
+                    {"text": user_text.strip()},
+                ]
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseJsonSchema": GuardAnalysis.model_json_schema(),
+        },
+    }
+
+    response = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {creds.token}",
+            "Content-Type": "application/json",
+            "x-goog-user-project": PROJECT_ID,
+        },
+        json=payload,
+        timeout=60,
+    )
+
+    if not response.ok:
+        raise RuntimeError(
+            f"Gemini OAuth error {response.status_code}: {response.text}"
         )
+
+    data = response.json()
+
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        return GuardAnalysis.model_validate_json(text)
     except Exception as exc:
         raise RuntimeError(
             "Gemini вернул некорректный структурированный ответ"
