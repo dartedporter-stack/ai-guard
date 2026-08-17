@@ -33,8 +33,22 @@ st.success(
     "🟢 GUARD CORE активен"
 )
 
-
 st.divider()
+
+
+# ============================================================
+# REQUEST LIMIT
+# ============================================================
+
+MAX_REQUESTS = 10
+
+if "request_count" not in st.session_state:
+    st.session_state.request_count = 0
+
+st.caption(
+    f"Запросов использовано: "
+    f"{st.session_state.request_count}/{MAX_REQUESTS}"
+)
 
 
 # ============================================================
@@ -72,6 +86,14 @@ if st.button(
 
     else:
 
+        if st.session_state.request_count >= MAX_REQUESTS:
+
+            st.warning(
+                "Лимит запросов на эту сессию исчерпан."
+            )
+
+            st.stop()
+
         with st.spinner(
             "🧠 GUARD анализирует..."
         ):
@@ -81,6 +103,8 @@ if st.button(
                 result = analyze_and_format(
                     text.strip()
                 )
+
+                st.session_state.request_count += 1
 
                 st.divider()
 
