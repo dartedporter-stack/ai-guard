@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
 from guard.analyzer import analyze_text
+from guard.history_store import HistoryStore
 from guard.risk_engine import (
     FACTOR_NAMES,
     action_safety,
@@ -18,13 +19,15 @@ app = FastAPI(
     version="0.1.0",
 )
 
+history_store = HistoryStore()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=(
         r"^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?$"
     ),
     allow_credentials=True,
-    allow_methods=["POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
 
@@ -62,6 +65,18 @@ class AnalyzeResponse(BaseModel):
     conclusion: str
 
 
+class HistoryRecord(BaseModel):
+    id: int
+    created_at: str
+    input_text: str
+    risk_score: int
+    risk_level: str
+    category: str
+    red_flags: list[str]
+    actions: list[str]
+    conclusion: str
+
+
 @app.post(
     "/analyze",
     response_model=AnalyzeResponse,
@@ -79,7 +94,7 @@ def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         for code, weight in calculated_factors
     ]
 
-    return AnalyzeResponse(
+    result = AnalyzeResponse(
         risk_score=score,
         risk_level=risk_level(score),
         action_safety=action_safety(analysis, score),
@@ -91,3 +106,26 @@ def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         actions=analysis.actions,
         conclusion=analysis.conclusion,
     )
+
+    history_store.save(
+        input_text=request.text,
+        risk_score=result.risk_score,
+        risk_level=result.risk_level,
+        category=result.category,
+        red_flags=result.red_flags,
+        actions=result.actions,
+        conclusion=result.conclusion,
+    )
+
+    return result
+
+
+@app.get(
+    "/history",
+    response_model=list[HistoryRecord],
+)
+def history() -> list[HistoryRecord]:
+    return [
+        HistoryRecord.model_validate(record)
+        for record in history_store.list_recent()
+    ]
