@@ -4,6 +4,7 @@ from pydantic import BaseModel, field_validator
 
 from guard.analyzer import analyze_text
 from guard.history_store import HistoryStore
+from guard.news_store import load_news
 from guard.risk_engine import (
     FACTOR_NAMES,
     action_safety,
@@ -77,6 +78,19 @@ class HistoryRecord(BaseModel):
     conclusion: str
 
 
+class NewsArticle(BaseModel):
+    id: int
+    title: str
+    summary: str
+    published_at: str
+    category: str
+    source_name: str
+    source_url: str | None
+    image_url: str | None
+    is_demo: bool
+    content: str
+
+
 @app.post(
     "/analyze",
     response_model=AnalyzeResponse,
@@ -128,4 +142,15 @@ def history() -> list[HistoryRecord]:
     return [
         HistoryRecord.model_validate(record)
         for record in history_store.list_recent()
+    ]
+
+
+@app.get(
+    "/news",
+    response_model=list[NewsArticle],
+)
+def news() -> list[NewsArticle]:
+    return [
+        NewsArticle.model_validate(article)
+        for article in load_news()
     ]
