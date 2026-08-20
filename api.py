@@ -1,4 +1,6 @@
-from fastapi import FastAPI
+from typing import Annotated
+
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
@@ -29,8 +31,35 @@ app.add_middleware(
     ),
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+
+
+def bearer_token(
+    authorization: Annotated[str | None, Header()] = None,
+) -> str:
+    scheme, _, token = (authorization or "").partition(" ")
+
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Требуется вход в аккаунт",
+        )
+
+    try:
+        history_store.verify_user(token)
+    except PermissionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(error),
+        ) from error
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+
+    return token
 
 
 class AnalyzeRequest(BaseModel):
@@ -95,7 +124,10 @@ class NewsArticle(BaseModel):
     "/analyze",
     response_model=AnalyzeResponse,
 )
-def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
+def analyze(
+    request: AnalyzeRequest,
+    access_token: Annotated[str, Depends(bearer_token)],
+) -> AnalyzeResponse:
     analysis = analyze_text(request.text)
     score, calculated_factors = calculate_fraud_risk(analysis)
 
@@ -121,15 +153,22 @@ def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         conclusion=analysis.conclusion,
     )
 
-    history_store.save(
-        input_text=request.text,
-        risk_score=result.risk_score,
-        risk_level=result.risk_level,
-        category=result.category,
-        red_flags=result.red_flags,
-        actions=result.actions,
-        conclusion=result.conclusion,
-    )
+    try:
+        history_store.save(
+            access_token=access_token,
+            input_text=request.text,
+            risk_score=result.risk_score,
+            risk_level=result.risk_level,
+            category=result.category,
+            red_flags=result.red_flags,
+            actions=result.actions,
+            conclusion=result.conclusion,
+        )
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
 
     return result
 
@@ -138,11 +177,18 @@ def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     "/history",
     response_model=list[HistoryRecord],
 )
-def history() -> list[HistoryRecord]:
-    return [
-        HistoryRecord.model_validate(record)
-        for record in history_store.list_recent()
-    ]
+def history(
+    access_token: Annotated[str, Depends(bearer_token)],
+) -> list[HistoryRecord]:
+    try:
+        records = history_store.list_recent(access_token=access_token)
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+
+    return [HistoryRecord.model_validate(record) for record in records]
 
 
 @app.get(

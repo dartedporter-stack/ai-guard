@@ -1,47 +1,55 @@
-import json
-import sqlite3
-from pathlib import Path
+from typing import Any
 
+import httpx
 
-DEFAULT_DATABASE_PATH = Path("ai_guard.db")
+from config import SUPABASE_ANON_KEY, SUPABASE_URL
 
 
 class HistoryStore:
-    def __init__(self, database_path: str | Path = DEFAULT_DATABASE_PATH):
-        self.database_path = Path(database_path)
-        self._initialize()
+    def __init__(
+        self,
+        supabase_url: str | None = SUPABASE_URL,
+        anon_key: str | None = SUPABASE_ANON_KEY,
+    ):
+        self.supabase_url = (supabase_url or "").rstrip("/")
+        self.anon_key = anon_key or ""
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            self.database_path,
-            timeout=5,
-        )
-        connection.row_factory = sqlite3.Row
-        return connection
-
-    def _initialize(self) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS analysis_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    created_at TEXT NOT NULL DEFAULT (
-                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                    ),
-                    input_text TEXT NOT NULL,
-                    risk_score INTEGER NOT NULL,
-                    risk_level TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    red_flags TEXT NOT NULL,
-                    actions TEXT NOT NULL,
-                    conclusion TEXT NOT NULL
-                )
-                """
+    def _require_configuration(self) -> None:
+        if not self.supabase_url or not self.anon_key:
+            raise RuntimeError(
+                "SUPABASE_URL и SUPABASE_ANON_KEY не настроены для API"
             )
+
+    def _headers(self, access_token: str) -> dict[str, str]:
+        self._require_configuration()
+        return {
+            "apikey": self.anon_key,
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+    def verify_user(self, access_token: str) -> None:
+        try:
+            response = httpx.get(
+                f"{self.supabase_url}/auth/v1/user",
+                headers=self._headers(access_token),
+                timeout=10,
+            )
+        except httpx.HTTPError as error:
+            raise RuntimeError("Не удалось проверить сессию Supabase") from error
+
+        if response.status_code in {401, 403}:
+            raise PermissionError("Недействительная сессия Supabase")
+
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise RuntimeError("Не удалось проверить сессию Supabase") from error
 
     def save(
         self,
         *,
+        access_token: str,
         input_text: str,
         risk_score: int,
         risk_level: str,
@@ -50,67 +58,56 @@ class HistoryStore:
         actions: list[str],
         conclusion: str,
     ) -> int:
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO analysis_history (
-                    input_text,
-                    risk_score,
-                    risk_level,
-                    category,
-                    red_flags,
-                    actions,
-                    conclusion
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    input_text,
-                    risk_score,
-                    risk_level,
-                    category,
-                    json.dumps(red_flags, ensure_ascii=False),
-                    json.dumps(actions, ensure_ascii=False),
-                    conclusion,
-                ),
+        try:
+            response = httpx.post(
+                f"{self.supabase_url}/rest/v1/analysis_history",
+                headers={
+                    **self._headers(access_token),
+                    "Prefer": "return=representation",
+                },
+                json={
+                    "input_text": input_text,
+                    "risk_score": risk_score,
+                    "risk_level": risk_level,
+                    "category": category,
+                    "red_flags": red_flags,
+                    "actions": actions,
+                    "conclusion": conclusion,
+                },
+                timeout=10,
             )
+            response.raise_for_status()
+            records = response.json()
+            return int(records[0]["id"])
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
+            raise RuntimeError("Не удалось сохранить историю в Supabase") from error
 
-            if cursor.lastrowid is None:
-                raise RuntimeError("SQLite не вернул id записи истории")
+    def list_recent(
+        self,
+        *,
+        access_token: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        try:
+            response = httpx.get(
+                f"{self.supabase_url}/rest/v1/analysis_history",
+                headers=self._headers(access_token),
+                params={
+                    "select": (
+                        "id,created_at,input_text,risk_score,risk_level,category,"
+                        "red_flags,actions,conclusion"
+                    ),
+                    "order": "created_at.desc,id.desc",
+                    "limit": str(limit),
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            records = response.json()
+        except (httpx.HTTPError, ValueError) as error:
+            raise RuntimeError("Не удалось загрузить историю из Supabase") from error
 
-            return cursor.lastrowid
+        if not isinstance(records, list):
+            raise RuntimeError("Supabase вернул некорректную историю")
 
-    def list_recent(self, limit: int = 50) -> list[dict]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT
-                    id,
-                    created_at,
-                    input_text,
-                    risk_score,
-                    risk_level,
-                    category,
-                    red_flags,
-                    actions,
-                    conclusion
-                FROM analysis_history
-                ORDER BY created_at DESC, id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-
-        return [
-            {
-                "id": row["id"],
-                "created_at": row["created_at"],
-                "input_text": row["input_text"],
-                "risk_score": row["risk_score"],
-                "risk_level": row["risk_level"],
-                "category": row["category"],
-                "red_flags": json.loads(row["red_flags"]),
-                "actions": json.loads(row["actions"]),
-                "conclusion": row["conclusion"],
-            }
-            for row in rows
-        ]
+        return records
