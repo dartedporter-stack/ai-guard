@@ -1,63 +1,13 @@
-import json
-import os
-
 import requests
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-
-from config import TEXT_MODEL
+from config import GEMINI_API_KEY, TEXT_MODEL
 from guard.models import GuardAnalysis
 from guard.prompts import GUARD_PROMPT
 
 
-SCOPES = [
-    "https://www.googleapis.com/auth/generative-language.retriever"
-]
-
-PROJECT_ID = "gen-lang-client-0229154451"
-
-
-def get_credentials():
-    """
-    Локально использует token.json.
-    В Streamlit Cloud использует GOOGLE_OAUTH_TOKEN_JSON
-    из Secrets / environment variables.
-    """
-
-    token_from_cloud = os.getenv("GOOGLE_OAUTH_TOKEN_JSON")
-
-    if token_from_cloud:
-        creds = Credentials.from_authorized_user_info(
-            json.loads(token_from_cloud),
-            SCOPES,
-        )
-    else:
-        creds = Credentials.from_authorized_user_file(
-            "token.json",
-            SCOPES,
-        )
-
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-
-        # Локально сохраняем обновлённый access token.
-        # Streamlit Secret менять автоматически нельзя.
-        if not token_from_cloud:
-            with open("token.json", "w") as token_file:
-                token_file.write(creds.to_json())
-
-    if not creds.valid:
-        raise RuntimeError(
-            "OAuth credentials Gemini недействительны"
-        )
-
-    return creds
-
-
 def analyze_text(user_text: str) -> GuardAnalysis:
     """
-    Отправляет текст в Gemini через OAuth
+    Отправляет текст в Gemini через серверный API-ключ
     и возвращает структурированный GuardAnalysis.
 
     Risk score здесь НЕ рассчитывается.
@@ -67,7 +17,8 @@ def analyze_text(user_text: str) -> GuardAnalysis:
     if not user_text or not user_text.strip():
         raise ValueError("Пустой текст для анализа")
 
-    creds = get_credentials()
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY не найден")
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/"
@@ -99,9 +50,8 @@ def analyze_text(user_text: str) -> GuardAnalysis:
     response = requests.post(
         url,
         headers={
-            "Authorization": f"Bearer {creds.token}",
+            "x-goog-api-key": GEMINI_API_KEY,
             "Content-Type": "application/json",
-            "x-goog-user-project": PROJECT_ID,
         },
         json=payload,
         timeout=60,
@@ -109,7 +59,7 @@ def analyze_text(user_text: str) -> GuardAnalysis:
 
     if not response.ok:
         raise RuntimeError(
-            f"Gemini OAuth error "
+            f"Gemini API error "
             f"{response.status_code}: {response.text}"
         )
 

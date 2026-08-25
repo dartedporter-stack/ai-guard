@@ -53,6 +53,12 @@ app.add_middleware(
 )
 
 
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Lightweight readiness check for the mobile app and cloud host."""
+    return {"status": "ok"}
+
+
 def bearer_token(
     authorization: Annotated[str | None, Header()] = None,
 ) -> str:

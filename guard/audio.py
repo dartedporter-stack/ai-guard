@@ -4,8 +4,7 @@ import wave
 
 import requests
 
-from config import TEXT_MODEL
-from guard.analyzer import get_credentials
+from config import GEMINI_API_KEY, TEXT_MODEL
 
 
 PCM_SAMPLE_RATE = 16_000
@@ -67,7 +66,10 @@ def transcribe_pcm16(
 ) -> str:
     """Transcribe a short PCM16 recording without saving it to disk."""
     wav_bytes = pcm16_to_wav(audio_bytes, sample_rate)
-    credentials = get_credentials()
+
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY не найден")
+
     url = (
         "https://generativelanguage.googleapis.com/v1beta/"
         f"models/{TEXT_MODEL}:generateContent"
@@ -90,7 +92,7 @@ def transcribe_pcm16(
     response = requests.post(
         url,
         headers={
-            "Authorization": f"Bearer {credentials.token}",
+            "x-goog-api-key": GEMINI_API_KEY,
             "Content-Type": "application/json",
         },
         json=payload,
